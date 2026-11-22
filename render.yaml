@@ -1,0 +1,24 @@
+# Despliegue en Render con un "Blueprint": crea el servidor web y la base de
+# datos Postgres en un solo paso, y conecta los dos automáticamente.
+services:
+  - type: web
+    name: monitor-nevera
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # Un solo proceso: el WebSocket guarda las páginas conectadas en memoria
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: API_KEY
+        generateValue: true          # Render crea una clave secreta al azar
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nevera-db
+          property: connectionString
+
+databases:
+  - name: nevera-db
+    plan: free

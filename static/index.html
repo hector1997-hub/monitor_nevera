@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Monitor Nevera</title>
+  <script src="/static/chart.umd.js"></script>  <!-- Chart.js 4.4.1 incluido en el proyecto -->
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --txt:#e2e8f0; --sub:#94a3b8; --acc:#38bdf8; --ok:#14532d; --mal:#7f1d1d; }
+    * { box-sizing: border-box; }
+    body { margin:0 auto; font-family: system-ui, sans-serif; background:var(--bg); color:var(--txt); padding:16px; max-width:1100px; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+    h1 { font-size:1.3rem; margin:0; }
+    h2 { font-size:.85rem; color:var(--sub); font-weight:600; margin:18px 0 8px; text-transform:uppercase; letter-spacing:.05em; }
+    .chip { font-size:.8rem; padding:4px 10px; border-radius:99px; background:var(--mal); }
+    .chip.ok { background:var(--ok); }
+    .tarjetas { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px,1fr)); gap:12px; }
+    .tarjeta { background:var(--card); border-radius:12px; padding:14px; }
+    .tarjeta span { display:block; color:var(--sub); font-size:.8rem; margin-bottom:2px; }
+    .tarjeta b { font-size:1.6rem; font-variant-numeric: tabular-nums; }
+    .tarjeta.alerta { background:var(--mal); }
+    .graficas { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px,1fr)); gap:12px; margin-top:12px; }
+    .grafica { background:var(--card); border-radius:12px; padding:14px; min-width:0; }
+    .acciones { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-top:16px; }
+    .acciones input { background:var(--card); color:var(--txt); border:1px solid #334155; border-radius:8px; padding:8px; }
+    button.boton { color:var(--bg); background:var(--acc); padding:10px 16px; border:0; border-radius:8px; font-weight:600; cursor:pointer; }
+    small { color:var(--sub); }
+    .lista { background:var(--card); border-radius:12px; padding:6px 14px; margin-top:12px; }
+    .lista div { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #334155; font-variant-numeric: tabular-nums; }
+    .lista div:last-child { border-bottom:0; }
+    button.sec { background:#334155; color:var(--txt); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>⚡ Monitor de la nevera</h1>
+    <div style="display:flex;gap:6px">
+      <div id="compresor" class="chip">Compresor --</div>
+      <div id="estado" class="chip">Desconectado</div>
+    </div>
+  </header>
+
+  <h2>Consumo</h2>
+  <div class="tarjetas">
+    <div class="tarjeta"><span>Potencia</span><b id="potencia">--</b> W</div>
+    <div class="tarjeta"><span>Corriente</span><b id="corriente">--</b> A</div>
+    <div class="tarjeta"><span>Voltaje</span><b id="voltaje">--</b> V</div>
+    <div class="tarjeta"><span>Factor de potencia</span><b id="fp">--</b></div>
+    <div class="tarjeta"><span>Frecuencia</span><b id="frecuencia">--</b> Hz</div>
+    <div class="tarjeta"><span>Energía acumulada</span><b id="energia">--</b> kWh</div>
+  </div>
+
+  <h2>Temperatura y puerta</h2>
+  <div class="tarjetas">
+    <div class="tarjeta"><span>Dentro de la nevera</span><b id="temp_interna">--</b> °C</div>
+    <div class="tarjeta"><span>Ambiente</span><b id="temp_ambiente">--</b> °C</div>
+    <div class="tarjeta"><span>Humedad ambiente</span><b id="humedad">--</b> %</div>
+    <div class="tarjeta" id="tPuerta"><span>Puerta</span><b id="puerta">--</b></div>
+    <div class="tarjeta"><span>Aperturas</span><b id="aperturas">--</b></div>
+    <div class="tarjeta"><span>Última apertura</span><b id="ultApertura" style="font-size:1.1rem">--</b></div>
+  </div>
+
+  <h2>Aperturas recientes de la puerta</h2>
+  <div class="lista" id="listaPuerta"><div><small>Sin aperturas registradas</small></div></div>
+
+  <div class="graficas">
+    <div class="grafica"><canvas id="gPotencia" height="170"></canvas></div>
+    <div class="grafica"><canvas id="gTemp" height="170"></canvas></div>
+    <div class="grafica"><canvas id="gFp" height="170"></canvas></div>
+  </div>
+
+  <div class="acciones">
+    <label><small>Desde</small><br><input type="date" id="desde"></label>
+    <label><small>Hasta</small><br><input type="date" id="hasta"></label>
+    <button class="boton" id="descargar">Descargar lecturas (CSV)</button>
+    <button class="boton sec" id="descargarPuerta">Descargar aperturas (CSV)</button>
+  </div>
+  <p><small id="ultima">Sin datos todavía</small></p>
+
+<script>
+  const MAX_PUNTOS = 300;
+  const UMBRAL_COMPRESOR = 30;   // W: por encima se considera que el compresor está encendido
+
+  function crearGrafica(id, series, min, max) {
+    return new Chart(document.getElementById(id), {
+      type: "line",
+      data: { labels: [], datasets: series.map(([label, color]) => ({
+              label, data: [], borderColor: color, borderWidth: 2, pointRadius: 0, tension: 0.2, spanGaps: true })) },
+      options: { animation: false, responsive: true,
+        scales: { x: { ticks: { color: "#94a3b8", maxTicksLimit: 6 } },
+                  y: { min, max, ticks: { color: "#94a3b8" } } },
+        plugins: { legend: { labels: { color: "#e2e8f0" } } } }
+    });
+  }
+
+  const gPotencia = crearGrafica("gPotencia", [["Potencia (W)", "#38bdf8"]]);
+  const gTemp = crearGrafica("gTemp", [["Nevera (°C)", "#34d399"], ["Ambiente (°C)", "#fbbf24"]]);
+  const gFp = crearGrafica("gFp", [["Factor de potencia", "#a78bfa"]], 0, 1);
+  const graficas = [gPotencia, gTemp, gFp];
+
+  function agregar(grafica, etiqueta, valores) {
+    grafica.data.labels.push(etiqueta);
+    valores.forEach((v, i) => grafica.data.datasets[i].data.push(v));
+    if (grafica.data.labels.length > MAX_PUNTOS) {
+      grafica.data.labels.shift();
+      grafica.data.datasets.forEach(d => d.data.shift());
+    }
+  }
+
+  // Muestra un número o "--" si el sensor no envió dato (null)
+  function texto(id, valor, decimales) {
+    document.getElementById(id).textContent =
+      (valor === null || valor === undefined) ? "--" : Number(valor).toFixed(decimales);
+  }
+
+  function mostrar(l, actualizar = true) {
+    const hora = new Date(l.fecha).toLocaleTimeString("es-CO");
+    agregar(gPotencia, hora, [l.potencia]);
+    agregar(gTemp, hora, [l.temp_interna, l.temp_ambiente]);
+    agregar(gFp, hora, [l.fp]);
+
+    texto("potencia", l.potencia, 1);
+    texto("corriente", l.corriente, 2);
+    texto("voltaje", l.voltaje, 1);
+    texto("fp", l.fp, 2);
+    texto("frecuencia", l.frecuencia, 1);
+    texto("energia", l.energia, 3);
+    texto("temp_interna", l.temp_interna, 1);
+    texto("temp_ambiente", l.temp_ambiente, 1);
+    texto("humedad", l.humedad, 0);
+    texto("aperturas", l.aperturas, 0);
+
+    const puerta = document.getElementById("puerta");
+    puerta.textContent = l.puerta_abierta == null ? "--" : (l.puerta_abierta ? "Abierta" : "Cerrada");
+    document.getElementById("tPuerta").className = "tarjeta" + (l.puerta_abierta ? " alerta" : "");
+
+    const comp = document.getElementById("compresor");
+    if (l.potencia == null) { comp.textContent = "Compresor --"; comp.className = "chip"; }
+    else if (l.potencia > UMBRAL_COMPRESOR) { comp.textContent = "Compresor encendido"; comp.className = "chip ok"; }
+    else { comp.textContent = "Compresor apagado"; comp.className = "chip"; }
+
+    document.getElementById("ultima").textContent = "Última lectura: " + new Date(l.fecha).toLocaleString("es-CO");
+    if (actualizar) graficas.forEach(g => g.update());
+  }
+
+  // ---- Aperturas de la puerta ----
+  let eventos = [];
+  const horaCorta = f => new Date(f).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  function duracion(s) { return s < 60 ? s.toFixed(0) + " s" : Math.floor(s / 60) + " min " + Math.round(s % 60) + " s"; }
+
+  function pintarEventos() {
+    const lista = document.getElementById("listaPuerta");
+    if (!eventos.length) return;
+    lista.innerHTML = eventos.map(e =>
+      `<div><span>${new Date(e.inicio).toLocaleDateString("es-CO")} · ${horaCorta(e.inicio)} → ${horaCorta(e.fin)}</span><b>${duracion(e.duracion_s)}</b></div>`
+    ).join("");
+    const u = eventos[0];
+    document.getElementById("ultApertura").textContent = horaCorta(u.inicio) + " (" + duracion(u.duracion_s) + ")";
+  }
+  function agregarEvento(e) {
+    eventos.unshift(e);
+    eventos.sort((a, b) => new Date(b.inicio) - new Date(a.inicio));
+    eventos = eventos.slice(0, 10);
+    pintarEventos();
+  }
+
+  // Descargar CSV (con fechas opcionales)
+  function descargar(ruta) {
+    const p = new URLSearchParams();
+    const d = document.getElementById("desde").value, h = document.getElementById("hasta").value;
+    if (d) p.set("desde", d);
+    if (h) p.set("hasta", h);
+    location.href = ruta + (p.toString() ? "?" + p : "");
+  }
+  document.getElementById("descargar").onclick = () => descargar("/api/export");
+  document.getElementById("descargarPuerta").onclick = () => descargar("/api/puerta/export");
+
+  fetch("/api/puerta?limite=10").then(r => r.json()).then(lista => { eventos = lista; pintarEventos(); });
+
+  // 1) Cargar el historial reciente
+  fetch("/api/lecturas?limite=" + MAX_PUNTOS)
+    .then(r => r.json())
+    .then(lista => { lista.forEach(l => mostrar(l, false)); graficas.forEach(g => g.update()); });
+
+  // 2) Escuchar lecturas nuevas en tiempo real (se reconecta solo)
+  function conectar() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    const estado = document.getElementById("estado");
+    ws.onopen = () => { estado.textContent = "En vivo"; estado.className = "chip ok"; };
+    ws.onmessage = e => {
+      const msg = JSON.parse(e.data);
+      if (msg.tipo === "puerta") agregarEvento(msg); else mostrar(msg);
+    };
+    ws.onclose = () => { estado.textContent = "Reconectando..."; estado.className = "chip"; setTimeout(conectar, 3000); };
+  }
+  conectar();
+</script>
+</body>
+</html>
